@@ -2,7 +2,7 @@ import { Canvas, Circle, Line } from '@shopify/react-native-skia';
 import { useMemo } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 
-import { Colors } from '@/constants/colors';
+import { useAppColors } from '@/hooks/use-app-colors';
 import { POSE_CONNECTIONS } from '@/lib/pose/connections';
 import type { PoseLandmark } from '@/types/pose';
 
@@ -19,6 +19,7 @@ type ScreenPoint = {
 };
 
 export function PoseOverlay({ landmarks, mirrored = false, minVisibility = 0.4 }: PoseOverlayProps) {
+  const colors = useAppColors();
   const { width, height } = useWindowDimensions();
 
   const points = useMemo<ScreenPoint[]>(() => {
@@ -44,7 +45,7 @@ export function PoseOverlay({ landmarks, mirrored = false, minVisibility = 0.4 }
               key={`line-${startIndex}-${endIndex}`}
               p1={{ x: start.x, y: start.y }}
               p2={{ x: end.x, y: end.y }}
-              color={Colors.skeletonLine}
+              color={colors.skeletonLine}
               strokeWidth={3}
             />
           );
@@ -58,7 +59,7 @@ export function PoseOverlay({ landmarks, mirrored = false, minVisibility = 0.4 }
               cx={point.x}
               cy={point.y}
               r={4}
-              color={Colors.skeletonJoint}
+              color={colors.skeletonJoint}
             />
           );
         })}

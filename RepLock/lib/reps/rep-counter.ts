@@ -21,14 +21,14 @@ export type RepFrameDebug = {
 
 const configByExercise: Record<ExerciseType, RepCounterConfig> = {
   pushup: {
-    minConfidence: 0.55,
-    downThreshold: 100,
+    minConfidence: 0.26,
+    downThreshold: 112,
     upThreshold: 155,
     minRepGapMs: 450,
   },
   squat: {
-    minConfidence: 0.55,
-    downThreshold: 105,
+    minConfidence: 0.24,
+    downThreshold: 108,
     upThreshold: 165,
     minRepGapMs: 500,
   },
@@ -52,45 +52,47 @@ const JOINTS = {
 function visibleLandmarks(landmarks: PoseLandmark[], indices: number[]): PoseLandmark[] | null {
   const values = indices.map((index) => landmarks[index]).filter(Boolean);
   if (values.length !== indices.length) return null;
+  if (values.some((point) => point.visibility <= 0.01)) return null;
   return values;
 }
 
+function combineFrameDebug(candidates: RepFrameDebug[]): RepFrameDebug {
+  if (candidates.length === 0) {
+    return { angle: 0, confidence: 0 };
+  }
+
+  return {
+    angle: average(candidates.map((entry) => entry.angle)),
+    confidence: average(candidates.map((entry) => entry.confidence)),
+  };
+}
+
+function computeSideDebug(
+  landmarks: PoseLandmark[],
+  indices: [number, number, number],
+): RepFrameDebug | null {
+  const side = visibleLandmarks(landmarks, indices);
+  if (!side) return null;
+
+  const angle = calculateJointAngle(side[0], side[1], side[2]);
+  const confidence = average([side[0].visibility, side[1].visibility, side[2].visibility]);
+  if (!Number.isFinite(angle)) return null;
+
+  return { angle, confidence };
+}
+
 function computePushupFrame(landmarks: PoseLandmark[]): RepFrameDebug {
-  const left = visibleLandmarks(landmarks, [JOINTS.leftShoulder, JOINTS.leftElbow, JOINTS.leftWrist]);
-  const right = visibleLandmarks(landmarks, [JOINTS.rightShoulder, JOINTS.rightElbow, JOINTS.rightWrist]);
-  if (!left || !right) return { angle: 0, confidence: 0 };
+  const left = computeSideDebug(landmarks, [JOINTS.leftShoulder, JOINTS.leftElbow, JOINTS.leftWrist]);
+  const right = computeSideDebug(landmarks, [JOINTS.rightShoulder, JOINTS.rightElbow, JOINTS.rightWrist]);
 
-  const leftAngle = calculateJointAngle(left[0], left[1], left[2]);
-  const rightAngle = calculateJointAngle(right[0], right[1], right[2]);
-  const confidence = average([
-    left[0].visibility,
-    left[1].visibility,
-    left[2].visibility,
-    right[0].visibility,
-    right[1].visibility,
-    right[2].visibility,
-  ]);
-
-  return { angle: average([leftAngle, rightAngle]), confidence };
+  return combineFrameDebug([left, right].filter(Boolean) as RepFrameDebug[]);
 }
 
 function computeSquatFrame(landmarks: PoseLandmark[]): RepFrameDebug {
-  const left = visibleLandmarks(landmarks, [JOINTS.leftHip, JOINTS.leftKnee, JOINTS.leftAnkle]);
-  const right = visibleLandmarks(landmarks, [JOINTS.rightHip, JOINTS.rightKnee, JOINTS.rightAnkle]);
-  if (!left || !right) return { angle: 0, confidence: 0 };
+  const left = computeSideDebug(landmarks, [JOINTS.leftHip, JOINTS.leftKnee, JOINTS.leftAnkle]);
+  const right = computeSideDebug(landmarks, [JOINTS.rightHip, JOINTS.rightKnee, JOINTS.rightAnkle]);
 
-  const leftAngle = calculateJointAngle(left[0], left[1], left[2]);
-  const rightAngle = calculateJointAngle(right[0], right[1], right[2]);
-  const confidence = average([
-    left[0].visibility,
-    left[1].visibility,
-    left[2].visibility,
-    right[0].visibility,
-    right[1].visibility,
-    right[2].visibility,
-  ]);
-
-  return { angle: average([leftAngle, rightAngle]), confidence };
+  return combineFrameDebug([left, right].filter(Boolean) as RepFrameDebug[]);
 }
 
 export function createRepCounterState(): RepCounterState {
@@ -99,6 +101,17 @@ export function createRepCounterState(): RepCounterState {
     phase: 'calibrating',
     lastRepTimestampMs: 0,
   };
+}
+
+export function getRepCounterConfig(exercise: ExerciseType): RepCounterConfig {
+  return configByExercise[exercise];
+}
+
+function normalizeElapsedMs(rawElapsed: number): number {
+  if (!Number.isFinite(rawElapsed) || rawElapsed <= 0) return 0;
+  // Some native frame timestamps can be in seconds or nanoseconds.
+  if (rawElapsed > 100_000) return rawElapsed / 1_000_000;
+  return rawElapsed < 10 ? rawElapsed * 1000 : rawElapsed;
 }
 
 export function evaluateRepFrame(
@@ -140,7 +153,8 @@ export function evaluateRepFrame(
   }
 
   if (previous.phase === 'down' && debug.angle >= config.upThreshold) {
-    if (result.timestampMs - previous.lastRepTimestampMs < config.minRepGapMs) {
+    const elapsedMs = normalizeElapsedMs(result.timestampMs - previous.lastRepTimestampMs);
+    if (previous.lastRepTimestampMs > 0 && elapsedMs < config.minRepGapMs) {
       return {
         next: {
           ...previous,

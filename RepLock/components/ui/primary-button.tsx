@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, ViewStyle } from 'react-native';
 
-import { Colors } from '@/constants/colors';
+import { useAppColors } from '@/hooks/use-app-colors';
 
 type PrimaryButtonProps = {
   label: string;
@@ -17,20 +17,22 @@ export function PrimaryButton({
   style,
   disabled = false,
 }: PrimaryButtonProps) {
+  const colors = useAppColors();
+
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => [
         styles.base,
-        variant === 'accent' && styles.accent,
-        variant === 'outline' && styles.outline,
-        variant === 'success' && styles.success,
+        variant === 'accent' && { backgroundColor: colors.accent },
+        variant === 'outline' && { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.border },
+        variant === 'success' && { backgroundColor: colors.success },
         disabled && styles.disabled,
         pressed && !disabled && styles.pressed,
         style,
       ]}>
-      <Text style={[styles.label, variant === 'outline' && styles.labelOutline]}>{label}</Text>
+      <Text style={[styles.label, { color: variant === 'outline' ? colors.text : '#120C1C' }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -43,17 +45,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
   },
-  accent: {
-    backgroundColor: Colors.accent,
-  },
-  outline: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.24)',
-  },
-  success: {
-    backgroundColor: Colors.success,
-  },
   disabled: {
     opacity: 0.45,
   },
@@ -62,11 +53,7 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.99 }],
   },
   label: {
-    color: '#07111B',
     fontSize: 18,
     fontWeight: '700',
-  },
-  labelOutline: {
-    color: Colors.text,
   },
 });

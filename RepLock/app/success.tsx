@@ -4,30 +4,33 @@ import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrimaryButton } from '@/components/ui/primary-button';
-import { Colors } from '@/constants/colors';
+import { RepLockLogo } from '@/components/ui/replock-logo';
+import { useAppColors } from '@/hooks/use-app-colors';
 import type { ExerciseType } from '@/types/pose';
 
 export default function SuccessScreen() {
+  const colors = useAppColors();
   const params = useLocalSearchParams<{ exercise?: string; reps?: string; tokensEarned?: string }>();
   const exercise: ExerciseType = params.exercise === 'squat' ? 'squat' : 'pushup';
   const reps = Number(params.reps ?? '0');
   const tokensEarned = Number(params.tokensEarned ?? '0');
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.bg }]}>
       <View style={styles.container}>
-        <View style={styles.badge}>
-          <MaterialIcons name="check" size={54} color="#073019" />
+        <RepLockLogo size={72} />
+        <View style={[styles.badge, { backgroundColor: colors.success, shadowColor: colors.success }]}>
+          <MaterialIcons name="check" size={54} color="#08361A" />
         </View>
-        <Text style={styles.title}>Objective validated</Text>
-        <Text style={styles.subtitle}>
-          {reps} reps • +{tokensEarned} tokens
+        <Text style={[styles.title, { color: colors.text }]}>Session validee</Text>
+        <Text style={[styles.subtitle, { color: colors.textMuted }]}>
+          {reps} reps | +{tokensEarned} tokens
         </Text>
 
         <View style={styles.actions}>
-          <PrimaryButton label="Back dashboard" onPress={() => router.replace('/')} variant="success" />
+          <PrimaryButton label="Retour accueil" onPress={() => router.replace('/')} variant="success" />
           <PrimaryButton
-            label={`Do another ${exercise}`}
+            label={`Refaire ${exercise === 'pushup' ? 'des pompes' : 'des squats'}`}
             onPress={() => router.replace({ pathname: '/live', params: { exercise } })}
             variant="outline"
           />
@@ -40,7 +43,6 @@ export default function SuccessScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.bg,
   },
   container: {
     flex: 1,
@@ -53,23 +55,19 @@ const styles = StyleSheet.create({
     width: 130,
     height: 130,
     borderRadius: 65,
-    backgroundColor: 'rgba(78, 226, 122, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#4EE27A',
-    shadowOpacity: 0.36,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.34,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 2 },
   },
   title: {
-    color: Colors.text,
     fontSize: 40,
     lineHeight: 44,
     fontWeight: '800',
     textAlign: 'center',
   },
   subtitle: {
-    color: Colors.textMuted,
     fontSize: 20,
     fontWeight: '600',
   },

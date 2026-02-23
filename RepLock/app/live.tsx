@@ -1,7 +1,7 @@
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
@@ -23,9 +23,10 @@ import { Worklets } from 'react-native-worklets-core';
 
 import { PoseOverlay } from '@/components/pose/pose-overlay';
 import { PrimaryButton } from '@/components/ui/primary-button';
+import { RepLockLogo } from '@/components/ui/replock-logo';
 import { Colors } from '@/constants/colors';
 import { detectPose, isPosePluginAvailable } from '@/lib/pose/detect-pose';
-import { createRepCounterState, evaluateRepFrame } from '@/lib/reps/rep-counter';
+import { createRepCounterState, evaluateRepFrame, getRepCounterConfig } from '@/lib/reps/rep-counter';
 import { useRepLockStore } from '@/state/replock-store';
 import type { ExerciseType, PoseFrameResult } from '@/types/pose';
 
@@ -37,22 +38,36 @@ type DebugState = {
   pluginReady: boolean;
 };
 
+type SessionState = 'ready' | 'active';
+
+function normalizeElapsedMs(rawElapsed: number): number {
+  if (!Number.isFinite(rawElapsed) || rawElapsed <= 0) return 0;
+  if (rawElapsed > 100_000) return rawElapsed / 1_000_000;
+  return rawElapsed < 10 ? rawElapsed * 1000 : rawElapsed;
+}
+
 export default function LiveScreen() {
-  const params = useLocalSearchParams<{ exercise?: string }>();
+  const params = useLocalSearchParams<{ exercise?: string; target?: string }>();
   const exercise: ExerciseType = params.exercise === 'squat' ? 'squat' : 'pushup';
+  const targetReps = Math.max(1, Math.min(100, Number(params.target ?? '10') || 10));
+
   const [cameraPosition, setCameraPosition] = useState<'front' | 'back'>('front');
   const [landmarks, setLandmarks] = useState<PoseFrameResult['landmarks']>([]);
   const [reps, setReps] = useState(0);
   const [tokensEarned, setTokensEarned] = useState(0);
+  const [sessionState, setSessionState] = useState<SessionState>('ready');
   const [debug, setDebug] = useState<DebugState>({
     fps: 0,
     confidence: 0,
-    phase: 'calibrating',
+    phase: 'ready',
     angle: 0,
     pluginReady: isPosePluginAvailable(),
   });
+
   const lastFrameTimestampMs = useRef<number>(0);
   const counterRef = useRef(createRepCounterState());
+  const hasAutoFinished = useRef(false);
+  const repConfig = useMemo(() => getRepCounterConfig(exercise), [exercise]);
 
   const { tokens, addTokens } = useRepLockStore();
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -82,6 +97,45 @@ export default function LiveScreen() {
     popOpacity.value = withSequence(withTiming(1, { duration: 40 }), withDelay(500, withTiming(0, { duration: 220 })));
   }, [flashOpacity, popOpacity, popScale]);
 
+  const finishSession = useCallback(() => {
+    router.replace({
+      pathname: '/success',
+      params: {
+        exercise,
+        reps: String(reps),
+        tokensEarned: String(tokensEarned),
+      },
+    });
+  }, [exercise, reps, tokensEarned]);
+
+  useEffect(() => {
+    if (sessionState !== 'active') return;
+    if (reps < targetReps) return;
+    if (hasAutoFinished.current) return;
+
+    hasAutoFinished.current = true;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+    finishSession();
+  }, [finishSession, reps, sessionState, targetReps]);
+
+  const startSession = useCallback(() => {
+    hasAutoFinished.current = false;
+    lastFrameTimestampMs.current = 0;
+    counterRef.current = createRepCounterState();
+    setReps(0);
+    setTokensEarned(0);
+    setLandmarks([]);
+    setDebug((current) => ({
+      ...current,
+      fps: 0,
+      confidence: 0,
+      phase: 'calibrating',
+      angle: 0,
+      pluginReady: isPosePluginAvailable(),
+    }));
+    setSessionState('active');
+  }, []);
+
   const onPoseFrame = useCallback(
     (result: PoseFrameResult | null) => {
       if (!result) {
@@ -100,7 +154,7 @@ export default function LiveScreen() {
       counterRef.current = frameEval.next;
 
       const prevTimestamp = lastFrameTimestampMs.current;
-      const deltaMs = prevTimestamp > 0 ? result.timestampMs - prevTimestamp : 0;
+      const deltaMs = prevTimestamp > 0 ? normalizeElapsedMs(result.timestampMs - prevTimestamp) : 0;
       lastFrameTimestampMs.current = result.timestampMs;
 
       setDebug({
@@ -112,6 +166,7 @@ export default function LiveScreen() {
       });
 
       if (!frameEval.repAwarded) return;
+      if (hasAutoFinished.current) return;
 
       setReps(frameEval.next.reps);
       setTokensEarned((value) => value + 10);
@@ -126,32 +181,45 @@ export default function LiveScreen() {
   const frameProcessor = useFrameProcessor(
     (frame) => {
       'worklet';
+      if (sessionState !== 'active') return;
       runAtTargetFps(30, () => {
         'worklet';
         const detected = detectPose(frame);
         onPoseFrameRunOnJS(detected);
       });
     },
-    [onPoseFrameRunOnJS],
+    [onPoseFrameRunOnJS, sessionState],
   );
 
-  const finishSession = useCallback(() => {
-    router.replace({
-      pathname: '/success',
-      params: {
-        exercise,
-        reps: String(reps),
-        tokensEarned: String(tokensEarned),
-      },
-    });
-  }, [exercise, reps, tokensEarned]);
+  const statusHint = useMemo(() => {
+    if (!debug.pluginReady) {
+      return 'Pose plugin missing. Rebuild iOS app.';
+    }
+    if (sessionState === 'ready') {
+      return 'Place le telephone et lance la session.';
+    }
+    if (debug.confidence < repConfig.minConfidence) {
+      return 'Recule un peu. Ton corps doit etre visible.';
+    }
+    if (debug.phase === 'calibrating') {
+      return 'Position de depart en cours...';
+    }
+    if (exercise === 'pushup') {
+      return debug.phase === 'up'
+        ? `Descends (angle <= ${repConfig.downThreshold.toFixed(0)} deg)`
+        : `Remonte (angle >= ${repConfig.upThreshold.toFixed(0)} deg)`;
+    }
+    return debug.phase === 'up'
+      ? `Descends (genoux <= ${repConfig.downThreshold.toFixed(0)} deg)`
+      : `Remonte (genoux >= ${repConfig.upThreshold.toFixed(0)} deg)`;
+  }, [debug.confidence, debug.phase, debug.pluginReady, exercise, repConfig, sessionState]);
 
   if (!hasPermission) {
     return (
       <SafeAreaView style={styles.permissionRoot}>
         <Text style={styles.permissionTitle}>Camera permission required</Text>
         <Text style={styles.permissionBody}>
-          RepLock a besoin de la camera pour detecter ton squelette et compter les reps.
+          RepLock a besoin de la camera pour detecter ton squelette et compter les repetitions.
         </Text>
         <PrimaryButton label="Allow camera" onPress={requestPermission} />
         <PrimaryButton label="Back" onPress={() => router.replace('/')} variant="outline" />
@@ -179,8 +247,7 @@ export default function LiveScreen() {
         frameProcessor={frameProcessor}
       />
 
-      <PoseOverlay landmarks={landmarks} mirrored={cameraPosition === 'front'} />
-
+      <PoseOverlay landmarks={landmarks} mirrored={cameraPosition === 'front'} minVisibility={0.22} />
       <Animated.View pointerEvents="none" style={[styles.flash, flashStyle]} />
 
       <SafeAreaView style={styles.overlay}>
@@ -194,20 +261,14 @@ export default function LiveScreen() {
             <Text style={styles.debugText}>{exercise.toUpperCase()}</Text>
             <Text style={styles.debugText}>fps {debug.fps.toFixed(1)}</Text>
             <Text style={styles.debugText}>conf {(debug.confidence * 100).toFixed(0)}%</Text>
-            <Text style={styles.debugText}>{debug.pluginReady ? 'plugin ok' : 'plugin missing'}</Text>
             <Text style={styles.debugText}>{debug.phase}</Text>
             <Text style={styles.debugText}>angle {debug.angle.toFixed(0)} deg</Text>
           </View>
         </View>
 
-        {!debug.pluginReady && (
-          <View style={styles.errorPill}>
-            <Text style={styles.errorTitle}>Pose plugin manquant</Text>
-            <Text style={styles.errorBody}>
-              Rebuild iOS apres cette mise a jour pour activer la detection du squelette.
-            </Text>
-          </View>
-        )}
+        <View pointerEvents="none" style={styles.brandLogoWrap}>
+          <RepLockLogo size={44} elevated={false} />
+        </View>
 
         <View style={styles.topControls}>
           <Pressable style={styles.iconButton} onPress={() => router.replace('/')}>
@@ -220,10 +281,31 @@ export default function LiveScreen() {
           </Pressable>
         </View>
 
-        <View style={styles.bottomPanel}>
-          <Text style={styles.repCountText}>{reps}</Text>
-          <PrimaryButton label="Finish" onPress={finishSession} variant="outline" />
-        </View>
+        {sessionState === 'ready' ? (
+          <View style={styles.readyCard}>
+            <Text style={styles.readyTitle}>Pret ?</Text>
+            <Text style={styles.readySubtitle}>
+              {targetReps} {exercise === 'pushup' ? 'pompes' : 'squats'} pour debloquer
+            </Text>
+            <View style={styles.readyList}>
+              <Text style={styles.readyLine}>• Pose le telephone face a toi</Text>
+              <Text style={styles.readyLine}>• Corps visible en entier</Text>
+              <Text style={styles.readyLine}>• Mouvement complet a chaque rep</Text>
+            </View>
+            <PrimaryButton label="Commencer" onPress={startSession} />
+          </View>
+        ) : (
+          <View style={styles.bottomPanel}>
+            <View style={styles.hintPill}>
+              <Text style={styles.hintText}>{statusHint}</Text>
+            </View>
+            <Text style={styles.repCountText}>
+              {reps}
+              <Text style={styles.repCountTarget}>/{targetReps}</Text>
+            </Text>
+            <PrimaryButton label="Finish" onPress={finishSession} variant="outline" />
+          </View>
+        )}
       </SafeAreaView>
 
       <Animated.View pointerEvents="none" style={[styles.repPop, popStyle]}>
@@ -290,25 +372,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
-  errorPill: {
-    marginTop: 14,
-    backgroundColor: 'rgba(255, 95, 103, 0.2)',
-    borderColor: 'rgba(255, 95, 103, 0.6)',
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 2,
-  },
-  errorTitle: {
-    color: Colors.text,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  errorBody: {
-    color: Colors.textMuted,
-    fontSize: 12,
-    lineHeight: 16,
+  brandLogoWrap: {
+    position: 'absolute',
+    top: 56,
+    alignSelf: 'center',
   },
   iconButton: {
     width: 48,
@@ -318,8 +385,50 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(7, 10, 16, 0.66)',
   },
+  readyCard: {
+    marginBottom: 24,
+    backgroundColor: 'rgba(14, 10, 24, 0.9)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(211, 155, 255, 0.32)',
+    padding: 18,
+    gap: 10,
+  },
+  readyTitle: {
+    color: Colors.text,
+    fontSize: 38,
+    fontWeight: '800',
+  },
+  readySubtitle: {
+    color: '#D9A4FF',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  readyList: {
+    marginVertical: 4,
+    gap: 4,
+  },
+  readyLine: {
+    color: Colors.textMuted,
+    fontSize: 14,
+    fontWeight: '600',
+  },
   bottomPanel: {
     gap: 12,
+  },
+  hintPill: {
+    borderRadius: 14,
+    backgroundColor: 'rgba(8, 12, 19, 0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  hintText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   repCountText: {
     color: Colors.text,
@@ -329,6 +438,11 @@ const styles = StyleSheet.create({
     lineHeight: 90,
     textShadowColor: 'rgba(0,0,0,0.45)',
     textShadowRadius: 8,
+  },
+  repCountTarget: {
+    color: Colors.textMuted,
+    fontSize: 42,
+    fontWeight: '700',
   },
   repPop: {
     position: 'absolute',

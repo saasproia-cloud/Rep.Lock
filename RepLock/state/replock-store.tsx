@@ -16,6 +16,7 @@ type RepLockStore = PersistedState & {
   hydrated: boolean;
   addTokens: (amount: number) => void;
   spendTokensForCredit: (platform: ShopPlatform, tokenCost: number, minutes: number) => boolean;
+  resetProgress: () => void;
 };
 
 const initialState: PersistedState = {
@@ -102,6 +103,10 @@ export function RepLockStoreProvider({ children }: { children: React.ReactNode }
     [],
   );
 
+  const resetProgress = useCallback(() => {
+    setState(initialState);
+  }, []);
+
   const value = useMemo<RepLockStore>(
     () => ({
       hydrated,
@@ -109,8 +114,9 @@ export function RepLockStoreProvider({ children }: { children: React.ReactNode }
       timeCredits: state.timeCredits,
       addTokens,
       spendTokensForCredit,
+      resetProgress,
     }),
-    [addTokens, hydrated, spendTokensForCredit, state.timeCredits, state.tokens],
+    [addTokens, hydrated, resetProgress, spendTokensForCredit, state.timeCredits, state.tokens],
   );
 
   return <RepLockStoreContext.Provider value={value}>{children}</RepLockStoreContext.Provider>;
